@@ -11,7 +11,7 @@ app.use(express.json({ limit: '10mb' }));
 
 const supabase = createClient(
   process.env.SUPABASE_URL || 'https://placeholder.supabase.co',
-  process.env.SUPABASE_SERVICE_KEY || 'placeholder'
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder'
 );
 
 app.get('/', (req, res) => {
