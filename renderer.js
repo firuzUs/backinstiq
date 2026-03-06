@@ -4,22 +4,22 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
 // ═══════════════════════════════════════════════════════════
 // ГЛАВНАЯ ФУНКЦИЯ
 // ═══════════════════════════════════════════════════════════
-async function processJob(job_id, { scenes, assets, transcripts = [], settings }, supabase) {
+
+async function processJob(job_id, { scenes, assets, settings, transcripts }, supabase) {
   const tmpDir = path.join(os.tmpdir(), `instiq_${job_id}`);
   fs.mkdirSync(tmpDir, { recursive: true });
-  console.log(`\n🎬 Job ${job_id} | Сцен: ${scenes.length}`);
+  console.log(`\n🎬 Job: ${job_id} | Сцен: ${scenes.length}`);
 
   try {
     await updateJob(supabase, job_id, { status: 'processing', progress: 5 });
 
-    // 1. Скачиваем ассеты параллельно
+    // 1. Скачиваем все ассеты
     console.log('📥 Скачиваю ассеты...');
     const localAssets = await downloadAssets(assets, tmpDir);
     await updateJob(supabase, job_id, { progress: 15 });
@@ -32,43 +32,56 @@ async function processJob(job_id, { scenes, assets, transcripts = [], settings }
       const asset = localAssets.find(a => a.file_index === scene.source_file_index);
       if (!asset) { console.warn(`⚠️ Ассет ${scene.source_file_index} не найден`); continue; }
 
-      const sceneOut = path.join(tmpDir, `scene_${i}.mp4`);
-      const transcript = transcripts.find(t => t.file_index === scene.source_file_index);
+      const outputPath = path.join(tmpDir, `scene_${i}.mp4`);
+      console.log(`   [${i+1}/${scenes.length}] ${asset.type} speed=${scene.speed || 1}`);
 
-      console.log(`   [${i+1}/${scenes.length}] ${asset.type} speed=${scene.speed||1}`);
-      await renderScene(asset, sceneOut, scene, settings, transcript, tmpDir, i);
+      if (asset.type === 'photo') {
+        await renderPhoto(asset.local_path, outputPath, scene, settings);
+      } else {
+        await renderVideo(asset.local_path, outputPath, scene, settings);
+      }
 
-      const progress = 15 + Math.round((i + 1) / scenes.length * 45);
-      await updateJob(supabase, job_id, { progress });
-      sceneFiles.push({ file: sceneOut, scene });
+      sceneFiles.push({ path: outputPath, scene });
+      await updateJob(supabase, job_id, { progress: 15 + Math.round((i+1) / scenes.length * 45) });
     }
 
-    // 3. Склеиваем с переходами
-    console.log('🔗 Склеиваю...');
+    // 3. Склейка
+    console.log('🔗 Склеиваю сцены...');
     const merged = path.join(tmpDir, 'merged.mp4');
-    await mergeWithTransitions(sceneFiles, merged, settings);
-    await updateJob(supabase, job_id, { progress: 70 });
+    await mergeScenes(sceneFiles, merged);
+    await updateJob(supabase, job_id, { progress: 65 });
 
-    // 4. Финальный микс: музыка + SFX
-    console.log('🎵 Накладываю аудио...');
-    const mixed = path.join(tmpDir, 'mixed.mp4');
-    await applyMusicAndSFX(merged, mixed, scenes, settings, tmpDir);
-    await updateJob(supabase, job_id, { progress: 85 });
+    // 4. Субтитры
+    const allWords = buildWordTimeline(scenes, transcripts);
+    let withSubs = merged;
 
-    // 5. Финальный encode
-    console.log('🎬 Финальный encode...');
+    if (allWords.length > 0 && settings.subtitle_style) {
+      console.log(`💬 Субтитры: ${settings.subtitle_style}...`);
+      const assFile = path.join(tmpDir, 'subs.ass');
+      const accent = settings.accent_color || '#FF8C00';
+      const style = settings.subtitle_style || 'bottom_burn';
+
+      generateASS(allWords, assFile, style, accent);
+
+      withSubs = path.join(tmpDir, 'subtitled.mp4');
+      await burnSubtitles(merged, withSubs, assFile);
+    }
+    await updateJob(supabase, job_id, { progress: 82 });
+
+    // 5. Цветокоррекция + музыка
+    console.log('🎨 Цвет + музыка...');
     const final = path.join(tmpDir, 'final.mp4');
-    await finalEncode(mixed, final);
+    await applyColorAndMusic(withSubs, final, settings);
     await updateJob(supabase, job_id, { progress: 95 });
 
-    // 6. Загружаем
-    console.log('☁️  Загружаю...');
+    // 6. Загрузка в Supabase
+    console.log('☁️  Загружаю результат...');
     const result_url = await uploadResult(supabase, final, job_id);
     await updateJob(supabase, job_id, { status: 'done', progress: 100, result_url });
-    console.log(`✅ Готово: ${result_url}`);
+    console.log(`✅ Готово! ${result_url}`);
 
   } catch (err) {
-    console.error(`❌ Ошибка:`, err.message);
+    console.error(`❌ Ошибка job ${job_id}:`, err.message);
     await updateJob(supabase, job_id, { status: 'error', error_message: err.message });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -76,218 +89,431 @@ async function processJob(job_id, { scenes, assets, transcripts = [], settings }
 }
 
 // ═══════════════════════════════════════════════════════════
-// РЕНДЕР ОДНОЙ СЦЕНЫ
+// СКАЧИВАНИЕ АССЕТОВ
 // ═══════════════════════════════════════════════════════════
-async function renderScene(asset, outputPath, scene, settings, transcript, tmpDir, sceneIndex) {
-  const [W, H] = getResolution(settings.aspect_ratio || '9:16');
-  const duration = scene.trim_end - scene.trim_start;
-  const speed = scene.speed || 1.0;
 
-  // Собираем video filtergraph
-  const vFilters = [];
+async function downloadAssets(assets, tmpDir) {
+  const result = [];
+  for (const asset of assets) {
+    const ext = asset.type === 'photo' ? '.jpg' : '.mp4';
+    const localPath = path.join(tmpDir, `asset_${asset.file_index}${ext}`);
+    console.log(`   ↓ ${asset.storage_url.split('/').pop()}`);
+    const response = await axios.get(asset.storage_url, {
+      responseType: 'arraybuffer',
+      timeout: 120000,
+    });
+    fs.writeFileSync(localPath, response.data);
+    result.push({ ...asset, local_path: localPath });
+  }
+  return result;
+}
 
-  // Масштаб + кроп (cover)
-  vFilters.push(`scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`);
+// ═══════════════════════════════════════════════════════════
+// РЕНДЕР ВИДЕО-СЦЕНЫ
+// ═══════════════════════════════════════════════════════════
 
-  // Ken Burns для фото и broll
-  if (settings.enable_motion && (asset.type === 'photo' || scene.role === 'broll')) {
-    const frames = Math.round((duration / speed) * 30);
-    vFilters.push(`scale=iw*1.1:ih*1.1,crop=iw:ihih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
+function renderVideo(inputPath, outputPath, scene, settings) {
+  return new Promise((resolve, reject) => {
+    const duration = scene.trim_end - scene.trim_start;
+    const speed = scene.speed || 1.0;
+    const [w, h] = getRes(settings.aspect_ratio);
+
+    // Cover-crop: масштаб с сохранением пропорций + кроп по центру
+    const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
+    const speedFilter = speed !== 1.0 ? `,setpts=${1/speed}*PTS` : '';
+
+    const cmd = ffmpeg(inputPath)
+      .seekInput(scene.trim_start)
+      .duration(duration / speed)
+      .videoFilter(`${scaleFilter}${speedFilter}`)
+      .outputOptions([
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 18',
+        '-pix_fmt yuv420p',
+        '-r 30',
+        '-movflags +faststart',
+      ]);
+
+    // Аудио
+    if (speed !== 1.0) {
+      cmd.audioFilter(`atempo=${Math.min(Math.max(speed, 0.5), 2.0)}`);
+    }
+
+    cmd
+      .outputOptions(['-c:a aac', '-b:a 192k'])
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', (err) => reject(new Error(`Сцена ${scene.scene_index}: ${err.message}`)))
+      .run();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// РЕНДЕР ФОТО-СЦЕНЫ
+// ═══════════════════════════════════════════════════════════
+
+function renderPhoto(inputPath, outputPath, scene, settings) {
+  return new Promise((resolve, reject) => {
+    const duration = scene.trim_end - scene.trim_start;
+    const [w, h] = getRes(settings.aspect_ratio);
+
+    ffmpeg(inputPath)
+      .loop(duration)
+      .videoFilter(
+        `scale=${w}:${h}:force_original_aspect_ratio=increase,` +
+        `crop=${w}:${h},setsar=1`
+      )
+      .outputOptions([
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 18',
+        '-pix_fmt yuv420p',
+        '-r 30',
+        '-an',
+        '-t', String(duration),
+        '-movflags +faststart',
+      ])
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', (err) => reject(new Error(`Фото сцена ${scene.scene_index}: ${err.message}`)))
+      .run();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// СКЛЕЙКА СЦЕН
+// ═══════════════════════════════════════════════════════════
+
+function mergeScenes(sceneFiles, outputPath) {
+  if (sceneFiles.length === 0) throw new Error('Нет сцен для склейки');
+  if (sceneFiles.length === 1) {
+    fs.copyFileSync(sceneFiles[0].path, outputPath);
+    return Promise.resolve();
   }
 
-  // Zoom to face
-  if (scene.zoom_face) {
-    const frames = Math.round((duration / speed) * 30);
-    vFilters.push(`scale=iw*1.1:ih*1.1,crop=iw:ihih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
-  }
+  return new Promise((resolve, reject) => {
+    const concatFile = outputPath + '_concat.txt';
+    fs.writeFileSync(concatFile, sceneFiles.map(s => `file '${s.path}'`).join('\n'));
 
-  // Speed
-  if (speed !== 1.0) {
-    const pts = 1.0 / speed;
-    vFilters.push(`setpts=${pts}*PTS`);
-  }
+    ffmpeg()
+      .input(concatFile)
+      .inputOptions(['-f concat', '-safe 0'])
+      .outputOptions([
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 18',
+        '-c:a aac',
+        '-b:a 192k',
+        '-pix_fmt yuv420p',
+        '-movflags +faststart',
+      ])
+      .output(outputPath)
+      .on('end', () => { try { fs.unlinkSync(concatFile); } catch {} resolve(); })
+      .on('error', reject)
+      .run();
+  });
+}
 
-  // Цветокоррекция
-  const colorFilter = getColorGrade(settings.color_grade || 'viral');
-  if (colorFilter) vFilters.push(colorFilter);
+// ═══════════════════════════════════════════════════════════
+// СУБТИТРЫ — ТАЙМЛАЙН СЛОВ
+// ═══════════════════════════════════════════════════════════
 
-  // Shake
-  if (scene.shake) {
-    const px = scene.shake.intensity === 'heavy' ? 15 : scene.shake.intensity === 'medium' ? 8 : 3;
-    const shakeDur = scene.shake.duration || 0.5;
-    vFilters.push(`geq=lum='p(X+${px}*sin(2*PI*t/${shakeDur}),Y+${px}*cos(2*PI*t/${shakeDur}))':cb='p(X+${px}*sin(2*PI*t/${shakeDur}),Y+${px}*cos(2*PI*t/${shakeDur}))':cr='p(X+${px}*sin(2*PI*t/${shakeDur}),Y+${px}*cos(2*PI*t/${shakeDur}))'`);
-  }
+function buildWordTimeline(scenes, transcripts) {
+  if (!transcripts || transcripts.length === 0) return [];
 
-  // Glitch (RGB shift)
-  if (scene.glitch) {
-    const gStart = scene.glitch.at_second || 0;
-    const gEnd = gStart + (scene.glitch.duration || 0.3);
-    vFilters.push(`rgbashift=rh=4:bh=-4:enable='between(t,${gStart},${gEnd})'`);
-  }
+  const allWords = [];
+  let offset = 0;
 
-  // Glow (vignette reversed)
-  if (settings.enable_glow && scene.face_visible) {
-    vFilters.push(`vignette=PI/3:mode=backward`);
-  }
+  for (const scene of scenes) {
+    const duration = (scene.trim_end - scene.trim_start) / (scene.speed || 1);
+    const t = transcripts.find(t => t.file_index === scene.source_file_index);
 
-  // Субтитры
-  if (transcript && transcript.words && transcript.words.length > 0) {
-    const assPath = path.join(tmpDir, `sub_${sceneIndex}.ass`);
-    generateASS(transcript.words, assPath, settings, scene.trim_start, W, H);
-    vFilters.push(`ass=${assPath}`);
-  }
-
-  // Hook text
-  if (scene.hook_text && sceneIndex === 0) {
-    const escaped = escapeDrawtext(scene.hook_text);
-    vFilters.push(
-      `drawtext=text='${escaped}':fontsize=${Math.round(H*0.055)}:fontcolor=white:` +
-      `shadowcolor=black:shadowx=3:shadowy=3:x=(w-text_w)/2:y=h*0.25:` +
-      `enable='between(t,0,3)':alpha='if(lt(t,0.3),t/0.3,if(gt(t,2.7),(3-t)/0.3,1))'`
-    );
-  }
-
-  // Lower third (brand)
-  if (settings.brand_name && sceneIndex === 0) {
-    const escaped = escapeDrawtext(`${settings.brand_name}${settings.brand_title ? ' | ' + settings.brand_title : ''}`);
-    const accent = (settings.accent_color || '#FF8C00').replace('#', '');
-    vFilters.push(
-      `drawbox=x=0:y=h-h/8:w=w:h=h/8:color=${accent}@0.85:t=fill:enable='between(t,0,3)'`,
-      `drawtext=text='${escaped}':fontsize=${Math.round(H*0.032)}:fontcolor=white:` +
-      `x=(w-text_w)/2:y=h-h/8+(h/8-text_h)/2:enable='between(t,0,3)'`
-    );
-  }
-
-  // End card (последняя сцена)
-  if (scene.role === 'cta' || scene.role === 'end') {
-    const accent = (settings.accent_color || '#FF8C00').replace('#', '');
-    const endStart = Math.max(0, duration - 3);
-    vFilters.push(
-      `drawbox=x=0:y=h*0.35:w=w:h=h*0.3:color=${accent}@0.9:t=fill:enable='gte(t,${endStart})'`,
-      `drawtext=text='Подписывайся!':fontsize=${Math.round(H*0.06)}:fontcolor=white:` +
-      `x=(w-text_w)/2:y=h*0.45:enable='gte(t,${endStart})'`
-    );
-  }
-
-  // Stickers (callout + number_badge через drawtext)
-  if (scene.stickers && scene.stickers.length > 0) {
-    for (const sticker of scene.stickers) {
-      const sx = Math.round((sticker.x / 100) * W);
-      const sy = Math.round((sticker.y / 100) * H);
-      const sColor = (sticker.color || settings.accent_color || '#FF8C00').replace('#', '');
-      const appearAt = sticker.appear_at || 0;
-
-      if (sticker.type === 'number_badge' || sticker.type === 'callout') {
-        const txt = escapeDrawtext(sticker.text || '1');
-        const fs = sticker.size === 'lg' ? Math.round(H*0.06) : sticker.size === 'sm' ? Math.round(H*0.03) : Math.round(H*0.045);
-        vFilters.push(
-          `drawbox=x=${sx-40}:y=${sy-40}:w=80:h=80:color=${sColor}@0.9:t=fill:enable='gte(t,${appearAt})'`,
-          `drawtext=text='${txt}':fontsize=${fs}:fontcolor=white:x=${sx}-text_w/2:y=${sy}-text_h/2:enable='gte(t,${appearAt})'`
-        );
-      } else if (sticker.type === 'highlight') {
-        vFilters.push(
-          `drawbox=x=${sx-100}:y=${sy-25}:w=200:h=50:color=${sColor}@0.4:t=fill:enable='gte(t,${appearAt})'`
-        );
+    if (t && t.words) {
+      const words = t.words.filter(w =>
+        w.start >= scene.trim_start && w.end <= scene.trim_end
+      );
+      for (const w of words) {
+        allWords.push({
+          text: w.text,
+          start: offset + (w.start - scene.trim_start) / (scene.speed || 1),
+          end:   offset + (w.end   - scene.trim_start) / (scene.speed || 1),
+        });
       }
     }
+
+    offset += duration;
   }
 
-  // Строим команду
+  return allWords;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ГЕНЕРАЦИЯ ASS ФАЙЛА
+// ═══════════════════════════════════════════════════════════
+
+function generateASS(words, assFile, style, accentHex) {
+  const accent = hexToASS(accentHex);
+  let content = '';
+
+  switch (style) {
+    case 'viral_pop':
+      content = generateViralPop(words, accent);
+      break;
+    case 'outlined':
+      content = generateOutlined(words);
+      break;
+    case 'highlight_roll':
+      content = generateHighlightRoll(words, accent);
+      break;
+    case 'word_storm':
+      content = generateWordStorm(words);
+      break;
+    case 'emoji_enhanced':
+      content = generateEmojiEnhanced(words);
+      break;
+    case 'bottom_burn':
+    default:
+      content = generateBottomBurn(words);
+      break;
+  }
+
+  // UTF-8 BOM нужен для кириллицы в ASS
+  fs.writeFileSync(assFile, '\uFEFF' + content, 'utf8');
+}
+
+// ─── bottom_burn ─────────────────────────────────────────
+
+function generateBottomBurn(words) {
+  const phrases = groupIntoPhrases(words, 5, 0.5);
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,1,0,0,0,100,100,0,0,3,0,0,2,40,40,180,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = phrases.map(p =>
+    `Dialogue: 0,${toTime(p.start)},${toTime(p.end)},Default,,0,0,0,,${p.text}`
+  );
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ─── viral_pop ───────────────────────────────────────────
+
+function generateViralPop(words, accent) {
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Active,Arial Black,90,${accent},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,40,40,350,1
+Style: Inactive,Arial Black,90,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,40,40,350,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = words.map((w, i) => {
+    const style = i % 3 === 1 ? 'Active' : 'Inactive';
+    const pop = `{\\fscx80\\fscy80\\t(0,100,\\fscx100\\fscy100)}`;
+    return `Dialogue: 0,${toTime(w.start)},${toTime(w.end)},${style},,0,0,0,,${pop}${w.text}`;
+  });
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ─── outlined ────────────────────────────────────────────
+
+function generateOutlined(words) {
+  const phrases = groupIntoPhrases(words, 3, 0.4);
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial Black,96,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,2,0,1,6,0,5,40,40,350,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = phrases.map(p =>
+    `Dialogue: 0,${toTime(p.start)},${toTime(p.end)},Default,,0,0,0,,${p.text.toUpperCase()}`
+  );
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ─── highlight_roll (karaoke) ─────────────────────────────
+
+function generateHighlightRoll(words, accent) {
+  const phrases = groupIntoPhrases(words, 5, 0.5);
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Karaoke,Arial Black,80,${accent},&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,200,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = phrases.map(p => {
+    const karaokeText = p.words.map(w => {
+      const durationCs = Math.round((w.end - w.start) * 100);
+      return `{\\kf${durationCs}}${w.text}`;
+    }).join(' ');
+    return `Dialogue: 0,${toTime(p.start)},${toTime(p.end)},Karaoke,,0,0,0,,${karaokeText}`;
+  });
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ─── word_storm ───────────────────────────────────────────
+
+function generateWordStorm(words) {
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Storm,Arial Black,120,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,5,0,5,40,40,0,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = words.map(w => {
+    const pop = `{\\fad(50,50)\\fscx120\\fscy120\\t(0,80,\\fscx100\\fscy100)}`;
+    return `Dialogue: 0,${toTime(w.start)},${toTime(w.end)},Storm,,0,0,0,,${pop}${w.text.toUpperCase()}`;
+  });
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ─── emoji_enhanced ──────────────────────────────────────
+
+const EMOJI_MAP = {
+  'удивительно|вау|невероятно|вот это': ['🤯', '😱'],
+  'смешно|ржу|хаха|смех': ['😂', '🤣'],
+  'круто|огонь|топ|лучший': ['🔥', '💯'],
+  'смотри|внимание|важно|слушай': ['👀', '⚠️'],
+  'секрет|лайфхак|трюк|совет': ['💡', '🤫'],
+  'результат|итог|вывод|получилось': ['🚀', '✅'],
+  'деньги|заработок|бизнес|доход': ['💰', '📈'],
+  'еда|рецепт|готов|вкусно': ['🍳', '😋'],
+  'любовь|сердце|чувства': ['❤️', '🥰'],
+};
+
+function pickEmoji(text) {
+  for (const [pattern, emojis] of Object.entries(EMOJI_MAP)) {
+    if (new RegExp(pattern, 'i').test(text)) {
+      return emojis[0];
+    }
+  }
+  return '✨';
+}
+
+function generateEmojiEnhanced(words) {
+  const phrases = groupIntoPhrases(words, 5, 0.5);
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,1,0,0,0,100,100,0,0,3,0,0,2,40,40,180,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
+
+  const lines = phrases.map(p => {
+    const emoji = pickEmoji(p.text);
+    return `Dialogue: 0,${toTime(p.start)},${toTime(p.end)},Default,,0,0,0,,${emoji} ${p.text}`;
+  });
+
+  return header + '\n' + lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// НАЛОЖЕНИЕ СУБТИТРОВ
+// ═══════════════════════════════════════════════════════════
+
+function burnSubtitles(inputPath, outputPath, assFile) {
   return new Promise((resolve, reject) => {
-    let cmd = ffmpeg();
+    // Экранируем путь для FFmpeg (особенно важно для Windows-путей)
+    const safePath = assFile.replace(/\\/g, '/').replace(/'/g, "\\'");
 
-    if (asset.type === 'photo') {
-      cmd = cmd.input(asset.local_path).inputOptions([`-loop 1`, `-t ${duration / speed}`]);
-    } else {
-      cmd = cmd.input(asset.local_path).seekInput(scene.trim_start).duration(duration / speed);
-    }
+    ffmpeg(inputPath)
+      .videoFilter(`ass='${safePath}'`)
+      .outputOptions([
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 18',
+        '-c:a copy',
+        '-pix_fmt yuv420p',
+        '-movflags +faststart',
+      ])
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', (err) => {
+        console.warn('⚠️ Субтитры упали, продолжаю без них:', err.message);
+        fs.copyFileSync(inputPath, outputPath);
+        resolve();
+      })
+      .run();
+  });
+}
 
-    cmd = cmd.videoFilter(vFilters.join(','));
+// ═══════════════════════════════════════════════════════════
+// ЦВЕТОКОРРЕКЦИЯ + МУЗЫКА
+// ═══════════════════════════════════════════════════════════
 
-    // Audio
-    if (asset.type === 'video' && speed !== 1.0) {
-      const atempo = Math.min(Math.max(speed, 0.5), 2.0);
-      cmd = cmd.audioFilter(`atempo=${atempo}`);
-    }
-    if (asset.type === 'photo') {
-      cmd = cmd.outputOptions(['-an']);
+function applyColorAndMusic(inputPath, outputPath, settings) {
+  return new Promise((resolve, reject) => {
+    const colorFilter = getColorFilter(settings.color_grade || 'viral');
+    let cmd = ffmpeg(inputPath).videoFilter(colorFilter);
+
+    if (settings.music_url) {
+      const vol = settings.music_volume || 0.12;
+      cmd = cmd
+        .input(settings.music_url)
+        .complexFilter([
+          `[0:a]volume=1.0[speech]`,
+          `[1:a]volume=${vol}[music]`,
+          `[speech][music]amix=inputs=2:duration=first:dropout_transition=2[a]`,
+        ])
+        .outputOptions(['-map 0:v', '-map [a]']);
     }
 
     cmd
       .outputOptions([
-        '-c:v libx264', '-preset fast', '-crf 22',
-        '-pix_fmt yuv420p', '-r 30',
-        '-c:a aac', '-b:a 192k',
-      ])
-      .output(outputPath)
-      .on('end', resolve)
-      .on('error', (err) => reject(new Error(`Scene render failed: ${err.message}`)))
-      .run();
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// СКЛЕЙКА С ПЕРЕХОДАМИ
-// ═══════════════════════════════════════════════════════════
-async function mergeWithTransitions(sceneFiles, outputPath, settings) {
-  if (sceneFiles.length === 0) throw new Error('Нет сцен');
-  if (sceneFiles.length === 1) {
-    fs.copyFileSync(sceneFiles[0].file, outputPath);
-    return;
-  }
-
-  // Простая concat склейка (xfade требует точных длительностей — добавим в v2)
-  return new Promise((resolve, reject) => {
-    const concatPath = outputPath + '.txt';
-    fs.writeFileSync(concatPath, sceneFiles.map(s => `file '${s.file}'`).join('\n'));
-
-    ffmpeg()
-      .input(concatPath)
-      .inputOptions(['-f concat', '-safe 0'])
-      .outputOptions([
-        '-c:v libx264', '-preset fast', '-crf 21',
-        '-pix_fmt yuv420p', '-r 30',
-        '-c:a aac', '-b:a 192k',
-        '-movflags +faststart'
-      ])
-      .output(outputPath)
-      .on('end', () => { fs.unlinkSync(concatPath); resolve(); })
-      .on('error', reject)
-      .run();
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// МУЗЫКА + SFX
-// ═══════════════════════════════════════════════════════════
-async function applyMusicAndSFX(inputPath, outputPath, scenes, settings, tmpDir) {
-  const hasMusicUrl = settings.music_url && settings.music_url.startsWith('http');
-
-  if (!hasMusicUrl) {
-    fs.copyFileSync(inputPath, outputPath);
-    return;
-  }
-
-  // Скачиваем музыку
-  const musicPath = path.join(tmpDir, 'music.mp3');
-  const resp = await axios.get(settings.music_url, { responseType: 'arraybuffer' });
-  fs.writeFileSync(musicPath, resp.data);
-
-  const vol = settings.music_volume || 0.12;
-
-  return new Promise((resolve, reject) => {
-    ffmpeg()
-      .input(inputPath)
-      .input(musicPath)
-      .complexFilter([
-        `[0:a]volume=1.0[speech]`,
-        `[1:a]volume=${vol}[music]`,
-        `[speech][music]amix=inputs=2:duration=first:dropout_transition=2[a]`
-      ])
-      .outputOptions([
-        '-map 0:v', '-map [a]',
-        '-c:v copy', '-c:a aac', '-b:a 192k',
-        '-movflags +faststart'
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 18',
+        '-c:a aac',
+        '-b:a 192k',
+        '-pix_fmt yuv420p',
+        '-movflags +faststart',
       ])
       .output(outputPath)
       .on('end', resolve)
@@ -297,151 +523,111 @@ async function applyMusicAndSFX(inputPath, outputPath, scenes, settings, tmpDir)
 }
 
 // ═══════════════════════════════════════════════════════════
-// ФИНАЛЬНЫЙ ENCODE
+// ЗАГРУЗКА В SUPABASE
 // ═══════════════════════════════════════════════════════════
-function finalEncode(inputPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
-      .outputOptions([
-        '-c:v libx264', '-preset medium', '-crf 20',
-        '-pix_fmt yuv420p', '-r 30',
-        '-c:a aac', '-b:a 192k',
-        '-movflags +faststart'
-      ])
-      .output(outputPath)
-      .on('end', resolve)
-      .on('error', reject)
-      .run();
-  });
-}
-
-// ═══════════════════════════════════════════════════════════
-// ГЕНЕРАЦИЯ ASS СУБТИТРОВ
-// ═══════════════════════════════════════════════════════════
-function generateASS(words, assPath, settings, trimStart, W, H) {
-  const style = settings.subtitle_style || 'bottom_burn';
-  const accent = (settings.accent_color || '#FF8C00').replace('#', '');
-  const accentASS = `&H00${accent.slice(4,6)}${accent.slice(2,4)}${accent.slice(0,2)}`;
-
-  // Стили ASS
-  const styles = {
-    bottom_burn:    `Style: Default,Arial,${Math.round(H*0.042)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,60,1`,
-    viral_pop:      `Style: Default,Arial Bold,${Math.round(H*0.065)},&H00FFFFFF,&H000000FF,&H00000000,&H40000000,-1,0,0,0,100,100,0,0,1,3,0,5,10,10,${Math.round(H*0.1)},1`,
-    outlined:       `Style: Default,Arial,${Math.round(H*0.045)},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,60,1`,
-    highlight_roll: `Style: Default,Arial,${Math.round(H*0.042)},&H00FFFFFF,&H000000FF,${accentASS},&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,60,1`,
-    word_storm:     `Style: Default,Arial Bold,${Math.round(H*0.072)},&H00FFFFFF,&H000000FF,&H00000000,&H60000000,-1,0,0,0,100,100,0,0,1,4,0,5,10,10,${Math.round(H*0.4)},1`,
-    emoji_enhanced: `Style: Default,Arial,${Math.round(H*0.042)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,60,1`,
-  };
-
-  const header = `[Script Info]
-ScriptType: v4.00+
-PlayResX: ${W}
-PlayResY: ${H}
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-${styles[style] || styles.bottom_burn}
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-`;
-
-  // Группируем слова по 4 (или по одному для word_storm и viral_pop)
-  let events = '';
-  const perGroup = (style === 'word_storm' || style === 'viral_pop') ? 1 : 4;
-
-  for (let i = 0; i < words.length; i += perGroup) {
-    const group = words.slice(i, i + perGroup);
-    const start = toASSTime(group[0].start - trimStart);
-    const end = toASSTime(group[group.length - 1].end - trimStart + 0.05);
-    const text = group.map(w => w.text).join(' ');
-
-    // Эмодзи для emoji_enhanced
-    const suffix = style === 'emoji_enhanced' ? getContextEmoji(text) : '';
-
-    events += `Dialogue: 0,${start},${end},Default,,0,0,0,,${text}${suffix}\n`;
-  }
-
-  fs.writeFileSync(assPath, header + events, 'utf8');
-}
-
-function toASSTime(sec) {
-  if (sec < 0) sec = 0;
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  const cs = Math.floor((sec % 1) * 100);
-  return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(cs).padStart(2,'0')}`;
-}
-
-function getContextEmoji(text) {
-  const map = {
-    'деньги|доход|заработ|прибыль': ' 💰',
-    'успех|победа|достиг': ' 🏆',
-    'внимание|важно|ключевой': ' ⚡',
-    'сердц|люб|чувств': ' ❤️',
-    'огонь|горит|жар': ' 🔥',
-    'идея|мысль|думать': ' 💡',
-    'рост|растет|увеличива': ' 📈',
-  };
-  const lower = text.toLowerCase();
-  for (const [pattern, emoji] of Object.entries(map)) {
-    if (new RegExp(pattern).test(lower)) return emoji;
-  }
-  return '';
-}
-
-// ═══════════════════════════════════════════════════════════
-// ВСПОМОГАТЕЛЬНЫЕ
-// ═══════════════════════════════════════════════════════════
-function getResolution(ratio) {
-  return {
-    '9:16': [1080, 1920],
-    '16:9': [1920, 1080],
-    '1:1':  [1080, 1080],
-    '4:5':  [1080, 1350],
-  }[ratio] || [1080, 1920];
-}
-
-function getColorGrade(preset) {
-  return {
-    cinema:      'eq=contrast=1.15:saturation=0.85:brightness=-0.08,vignette=PI/4',
-    golden_hour: 'eq=contrast=1.08:saturation=1.2:brightness=0.05,colorbalance=rs=0.1:gs=0.05:bs=-0.05',
-    clean_white: 'eq=contrast=1.05:saturation=0.9:brightness=0.08',
-    neon_night:  'eq=contrast=1.25:saturation=1.4:brightness=-0.12,vignette=PI/3',
-    matte_film:  'eq=contrast=0.92:saturation=0.8:brightness=0.02,noise=alls=3:allf=t',
-    viral:       'eq=contrast=1.3:saturation=1.35:brightness=-0.05,vignette=PI/4',
-  }[preset] || 'eq=contrast=1.3:saturation=1.35:brightness=-0.05';
-}
-
-function escapeDrawtext(text) {
-  return (text || '').replace(/'/g, "\u2019").replace(/:/g, '\\:').replace(/,/g, '\\,');
-}
-
-async function downloadAssets(assets, tmpDir) {
-  return Promise.all(assets.map(async (asset) => {
-    const ext = asset.type === 'photo' ? '.jpg' : '.mp4';
-    const localPath = path.join(tmpDir, `asset_${asset.file_index}${ext}`);
-    const resp = await axios.get(asset.storage_url, { responseType: 'arraybuffer' });
-    fs.writeFileSync(localPath, resp.data);
-    return { ...asset, local_path: localPath };
-  }));
-}
 
 async function uploadResult(supabase, filePath, job_id) {
   const buffer = fs.readFileSync(filePath);
   const fileName = `renders/${job_id}/final.mp4`;
-  const { error } = await supabase.storage.from('video-exports')
+
+  const { error } = await supabase.storage
+    .from('video-exports')
     .upload(fileName, buffer, { contentType: 'video/mp4', upsert: true });
-  if (error) throw error;
-  return supabase.storage.from('video-exports').getPublicUrl(fileName).data.publicUrl;
+
+  if (error) throw new Error(`Supabase upload: ${error.message}`);
+
+  const { data } = supabase.storage.from('video-exports').getPublicUrl(fileName);
+  return data.publicUrl;
+}
+
+// ═══════════════════════════════════════════════════════════
+// УТИЛИТЫ
+// ═══════════════════════════════════════════════════════════
+
+function groupIntoPhrases(words, maxWords = 5, maxGap = 0.5) {
+  const phrases = [];
+  let group = [];
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const gap = group.length > 0 ? w.start - group[group.length - 1].end : 0;
+    const isLast = i === words.length - 1;
+
+    if (group.length >= maxWords || gap > maxGap) {
+      if (group.length > 0) {
+        phrases.push({
+          words: group,
+          start: group[0].start,
+          end: group[group.length - 1].end,
+          text: group.map(w => w.text).join(' '),
+        });
+      }
+      group = [];
+    }
+
+    group.push(w);
+
+    if (isLast && group.length > 0) {
+      phrases.push({
+        words: group,
+        start: group[0].start,
+        end: group[group.length - 1].end,
+        text: group.map(w => w.text).join(' '),
+      });
+    }
+  }
+
+  return phrases;
+}
+
+function toTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const cs = Math.round((seconds % 1) * 100);
+  return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(cs).padStart(2,'0')}`;
+}
+
+function hexToASS(hex, alpha = '00') {
+  const clean = (hex || '#FF8C00').replace('#', '');
+  const r = clean.slice(0, 2);
+  const g = clean.slice(2, 4);
+  const b = clean.slice(4, 6);
+  return `&H${alpha}${b}${g}${r}`.toUpperCase();
+}
+
+function getRes(ratio) {
+  const map = {
+    '9:16': [1080, 1920],
+    '16:9': [1920, 1080],
+    '1:1':  [1080, 1080],
+    '4:5':  [1080, 1350],
+  };
+  return map[ratio] || [1080, 1920];
+}
+
+function getColorFilter(preset) {
+  const grades = {
+    cinema:      'eq=contrast=1.12:saturation=0.88:brightness=-0.03,vignette=PI/5',
+    golden_hour: 'eq=contrast=1.06:saturation=1.15:brightness=0.02',
+    clean_white: 'eq=contrast=1.03:saturation=0.92:brightness=0.04',
+    neon_night:  'eq=contrast=1.18:saturation=1.3:brightness=-0.05,vignette=PI/4',
+    matte_film:  'eq=contrast=0.94:saturation=0.82:brightness=0.01',
+    viral:       'eq=contrast=1.15:saturation=1.2:brightness=-0.02',
+  };
+  return grades[preset] || grades.viral;
 }
 
 async function updateJob(supabase, job_id, updates) {
-  await supabase.from('render_jobs')
+  const { error } = await supabase
+    .from('render_jobs')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', job_id);
+  if (error) console.error('DB update error:', error.message);
 }
 
 module.exports = { processJob };
+
+
+
+
