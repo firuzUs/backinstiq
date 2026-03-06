@@ -608,10 +608,10 @@ function getRes(ratio) {
 
 function getColorFilter(preset) {
   const grades = {
-    cinema:      'eq=contrast=1.12:saturation=0.88:brightness=-0.03,vignette=PI/5',
+    cinema:      'eq=contrast=1.12:saturation=0.88:brightness=-0.03',
     golden_hour: 'eq=contrast=1.06:saturation=1.15:brightness=0.02',
     clean_white: 'eq=contrast=1.03:saturation=0.92:brightness=0.04',
-    neon_night:  'eq=contrast=1.18:saturation=1.3:brightness=-0.05,vignette=PI/4',
+    neon_night:  'eq=contrast=1.18:saturation=1.3:brightness=-0.05',
     matte_film:  'eq=contrast=0.94:saturation=0.82:brightness=0.01',
     viral:       'eq=contrast=1.15:saturation=1.2:brightness=-0.02',
   };
