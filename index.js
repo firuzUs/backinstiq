@@ -94,7 +94,7 @@ app.get('/jobs/:user_id', async (req, res) => {
   }
 });
 
-var PORT = process.env.PORT || 3000;
+var PORT = process.env.PORT || 8080;
 app.listen(PORT, function() {
   console.log('Instiq Renderer running on port ' + PORT);
   console.log('Supabase: ' + (process.env.SUPABASE_URL ? 'connected' : 'NO KEY - add to .env'));
