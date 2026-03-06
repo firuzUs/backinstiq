@@ -92,13 +92,13 @@ async function renderScene(asset, outputPath, scene, settings, transcript, tmpDi
   // Ken Burns для фото и broll
   if (settings.enable_motion && (asset.type === 'photo' || scene.role === 'broll')) {
     const frames = Math.round((duration / speed) * 30);
-    vFilters.push(`zoompan=z='min(zoom+0.0008,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
+    vFilters.push(`scale=iw*1.1:ih*1.1,crop=iw:ihih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
   }
 
   // Zoom to face
   if (scene.zoom_face) {
     const frames = Math.round((duration / speed) * 30);
-    vFilters.push(`zoompan=z='1+0.15*(on/${frames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
+    vFilters.push(`scale=iw*1.1:ih*1.1,crop=iw:ihih/2-(ih/zoom/2)':d=${frames}:s=${W}x${H}:fps=30`);
   }
 
   // Speed
