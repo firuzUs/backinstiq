@@ -493,7 +493,7 @@ function applyColorAndMusic(inputPath, outputPath, settings) {
     const colorFilter = getColorFilter(settings.color_grade || 'viral');
     let cmd = ffmpeg(inputPath).videoFilter(colorFilter);
 
-    if (settings.music_url) {
+    if (settings.music_url && settings.music_url.startsWith("http")) {
       const vol = settings.music_volume || 0.12;
       cmd = cmd
         .input(settings.music_url)
