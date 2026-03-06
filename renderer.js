@@ -492,7 +492,7 @@ function applyColorAndMusic(inputPath, outputPath, settings) {
   return new Promise((resolve, reject) => {
     let cmd = ffmpeg(inputPath);
 
-    if (settings.music_url && settings.music_url.startsWith("http")) {
+    if (false && settings.music_url) { // музыка временно отключена
       const vol = settings.music_volume || 0.12;
       cmd = cmd
         .input(settings.music_url)
