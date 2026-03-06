@@ -67,7 +67,7 @@ app.get('/status/:job_id', async (req, res) => {
       .from('render_jobs')
       .select('id, status, progress, result_url, error_message, created_at')
       .eq('id', req.params.job_id)
-      .single();
+      .maybeSingle();
 
     if (result.error) throw result.error;
     if (!result.data) return res.status(404).json({ error: 'Job not found' });
