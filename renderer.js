@@ -146,7 +146,9 @@ function renderVideoScene(inputPath, outputPath, scene, settings) {
       .videoFilter(filters.join(','))
       .outputOptions([
         '-c:v libx264',
-        '-preset fast',
+        '-preset ultrafast',
+        '-threads 1',
+        '-max_muxing_queue_size 400',
         '-crf 23',
         '-pix_fmt yuv420p',
         '-r 30'
@@ -183,7 +185,9 @@ function renderPhotoScene(inputPath, outputPath, scene, settings) {
       .videoFilter(zoomFilter)
       .outputOptions([
         '-c:v libx264',
-        '-preset fast',
+        '-preset ultrafast',
+        '-threads 1',
+        '-max_muxing_queue_size 400',
         '-crf 23',
         '-pix_fmt yuv420p',
         '-r 30',
@@ -219,7 +223,9 @@ function mergeScenes(sceneFiles, outputPath) {
       .inputOptions(['-f concat', '-safe 0'])
       .outputOptions([
         '-c:v libx264',
-        '-preset fast',
+        '-preset ultrafast',
+        '-threads 1',
+        '-max_muxing_queue_size 400',
         '-crf 22',
         '-pix_fmt yuv420p',
         '-movflags +faststart'
@@ -243,7 +249,9 @@ function applyFinalEffects(inputPath, outputPath, settings) {
       .videoFilter(allFilters)
       .outputOptions([
         '-c:v libx264',
-        '-preset fast',
+        '-preset ultrafast',
+        '-threads 1',
+        '-max_muxing_queue_size 400',
         '-crf 21',
         '-c:a aac',
         '-b:a 192k',
