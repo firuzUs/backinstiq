@@ -38,9 +38,7 @@ app.post('/render', async (req, res) => {
       user_id: user_id || null,
       status: 'queued',
       progress: 0,
-      scenes: scenes,
-      assets: assets,
-      settings: settings,
+      input_data: { scenes, assets, settings },
       created_at: new Date().toISOString()
     });
 
