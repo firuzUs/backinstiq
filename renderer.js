@@ -52,7 +52,9 @@ async function processJob(job_id, { scenes, assets, settings, transcripts }, sup
     await updateJob(supabase, job_id, { progress: 65 });
 
     // 4. Субтитры
-    const allWords = buildWordTimeline(scenes, transcripts);
+    console.log("📝 Транскрипты:", JSON.stringify(transcripts?.length), "слов:", transcripts?.reduce((a,t) => a + (t.words?.length||0), 0));
+  const allWords = buildWordTimeline(scenes, transcripts);
+    console.log("💬 Слов для субтитров:", allWords.length);
     let withSubs = merged;
 
     if (allWords.length > 0 && settings.subtitle_style) {
