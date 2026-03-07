@@ -67,7 +67,7 @@ async function processJob(job_id, { scenes, assets, settings, transcripts }, sup
 
       withSubs = path.join(tmpDir, 'subtitled.mp4');
       console.log("🔥 Запускаю burnSubtitles, ass=", assFile);
-      await burnSubtitles(merged, withSubs, assFile);
+      await burnSubtitles(merged, withSubs, allWords, style, accent);
       console.log("✅ burnSubtitles завершён");
     }
     await updateJob(supabase, job_id, { progress: 82 });
@@ -464,31 +464,53 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text`;
 // НАЛОЖЕНИЕ СУБТИТРОВ
 // ═══════════════════════════════════════════════════════════
 
-function burnSubtitles(inputPath, outputPath, assFile) {
+
+function burnSubtitles(inputPath, outputPath, words, style, accentHex) {
   return new Promise((resolve, reject) => {
-    // Экранируем путь для FFmpeg (особенно важно для Windows-путей)
-    const safePath = assFile.replace(/\\/g, '/').replace(/'/g, "\\'");
+    const phrases = groupIntoPhrases(words, 5, 0.5);
+    if (phrases.length === 0) {
+      fs.copyFileSync(inputPath, outputPath);
+      return resolve();
+    }
+
+    const accent = (accentHex || '#FF8C00').replace('#', '');
+    const styleConfig = {
+      bottom_burn:   { fontsize: 64, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 16, x: '(w-text_w)/2', y: 'h-180' },
+      viral_pop:     { fontsize: 80, fontcolor: '0x'+accent, box: 1, boxcolor: 'black@0.6', boxborderw: 20, x: '(w-text_w)/2', y: '(h-text_h)/2' },
+      outlined:      { fontsize: 88, fontcolor: 'white', box: 0, borderw: 6, bordercolor: 'black', x: '(w-text_w)/2', y: '(h-text_h)/2' },
+      highlight_roll:{ fontsize: 68, fontcolor: 'white', box: 1, boxcolor: '0x'+accent+'@0.85', boxborderw: 14, x: '(w-text_w)/2', y: 'h-200' },
+      word_storm:    { fontsize: 100, fontcolor: 'white', box: 0, borderw: 5, bordercolor: 'black', x: '(w-text_w)/2', y: '(h-text_h)/2' },
+      emoji_enhanced:{ fontsize: 64, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 16, x: '(w-text_w)/2', y: 'h-180' },
+    };
+    const cfg = styleConfig[style] || styleConfig.bottom_burn;
+
+    const filterParts = phrases.map(phrase => {
+      const text = phrase.text.replace(/'/g, '’').replace(/:/g, ' ').replace(/,/g, ' ');
+      const start = phrase.start.toFixed(3);
+      const end = phrase.end.toFixed(3);
+      let f = `drawtext=text='${text}':fontsize=${cfg.fontsize}:fontcolor=${cfg.fontcolor}:x=${cfg.x}:y=${cfg.y}`;
+      if (cfg.box) f += `:box=1:boxcolor=${cfg.boxcolor}:boxborderw=${cfg.boxborderw}`;
+      if (cfg.borderw) f += `:borderw=${cfg.borderw}:bordercolor=${cfg.bordercolor}`;
+      f += `:enable='between(t,${start},${end})'`;
+      return f;
+    });
+
+    console.log('   🔤', phrases.length, 'фраз, стиль:', style);
 
     ffmpeg(inputPath)
-      .videoFilter(`ass='${safePath}'`)
-      .outputOptions([
-        '-c:v libx264',
-        '-preset medium',
-        '-crf 18',
-        '-c:a copy',
-        '-pix_fmt yuv420p',
-        '-movflags +faststart',
-      ])
+      .videoFilter(filterParts.join(','))
+      .outputOptions(['-c:v libx264','-preset medium','-crf 18','-c:a copy','-pix_fmt yuv420p','-movflags +faststart'])
       .output(outputPath)
       .on('end', resolve)
       .on('error', (err) => {
-        console.error('❌ СУБТИТРЫ ОШИБКА:', err.message); console.error('❌ ASS файл:', assFile);
+        console.error('❌ drawtext ошибка:', err.message);
         fs.copyFileSync(inputPath, outputPath);
         resolve();
       })
       .run();
   });
 }
+
 
 // ═══════════════════════════════════════════════════════════
 // ЦВЕТОКОРРЕКЦИЯ + МУЗЫКА
