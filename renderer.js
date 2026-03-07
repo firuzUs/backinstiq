@@ -207,7 +207,8 @@ function mergeScenes(sceneFiles, outputPath) {
         '-crf 18',
         '-c:a aac',
         '-b:a 192k',
-        '-af',
+        '-ar 44100',
+        '-ac 2',
         '-pix_fmt yuv420p',
         '-movflags +faststart',
       ])
