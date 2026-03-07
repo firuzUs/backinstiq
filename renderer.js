@@ -66,7 +66,9 @@ async function processJob(job_id, { scenes, assets, settings, transcripts }, sup
       generateASS(allWords, assFile, style, accent);
 
       withSubs = path.join(tmpDir, 'subtitled.mp4');
+      console.log("🔥 Запускаю burnSubtitles, ass=", assFile);
       await burnSubtitles(merged, withSubs, assFile);
+      console.log("✅ burnSubtitles завершён");
     }
     await updateJob(supabase, job_id, { progress: 82 });
 
@@ -480,7 +482,7 @@ function burnSubtitles(inputPath, outputPath, assFile) {
       .output(outputPath)
       .on('end', resolve)
       .on('error', (err) => {
-        console.warn('⚠️ Субтитры упали, продолжаю без них:', err.message);
+        console.error('❌ СУБТИТРЫ ОШИБКА:', err.message); console.error('❌ ASS файл:', assFile);
         fs.copyFileSync(inputPath, outputPath);
         resolve();
       })
