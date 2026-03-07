@@ -297,7 +297,7 @@ function generateASS(words, assFile, style, accentHex) {
 // ─── bottom_burn ─────────────────────────────────────────
 
 function generateBottomBurn(words) {
-  const phrases = groupIntoPhrases(words, 5, 0.5);
+  const phrases = groupIntoPhrases(words, 2, 0.2);
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
