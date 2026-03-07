@@ -35,6 +35,7 @@ app.post('/render', async (req, res) => {
     console.log('📦 asset[0] url:', assets?.[0]?.storage_url?.slice(0,60));
     console.log('📦 transcript[0] words:', transcripts?.[0]?.words?.slice(0,2));
     console.log('================================');
+    console.log("📦 ПОЛНЫЙ PAYLOAD:", JSON.stringify({ scenes_count: scenes.length, assets_count: assets.length, transcripts_count: transcripts?.length, subtitle_style: settings?.subtitle_style, color_grade: settings?.color_grade, first_transcript_words: transcripts?.[0]?.words?.length }, null, 2));
     console.log("📝 Получено транскриптов:", transcripts?.length, "слов:", transcripts?.reduce((a,t) => a+(t.words?.length||0),0));
 
     if (!scenes || !assets || !settings) {
