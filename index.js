@@ -26,6 +26,29 @@ app.get('/', (req, res) => {
 app.post('/render', async (req, res) => {
   try {
     const { scenes, assets, settings, user_id, transcripts } = req.body;
+    const totalDuration = scenes?.reduce((a,s) => a + ((s.trim_end||0)-(s.trim_start||0)), 0);
+    console.log('
+╔════════════════════════════════════════╗');
+    console.log('║         📥 НОВЫЙ ЗАПРОС РЕНДЕРА         ║');
+    console.log('╚════════════════════════════════════════╝');
+    console.log('👤 user_id:        ', user_id || 'anonymous');
+    console.log('🎬 Сцен:           ', scenes?.length);
+    console.log('📁 Ассетов:        ', assets?.length);
+    console.log('⏱️  Длина видео:    ', totalDuration?.toFixed(1), 'сек →', (totalDuration/60).toFixed(1), 'мин');
+    console.log('────────────────────────────────────────');
+    console.log('🎨 Цветокоррекция: ', settings?.color_grade || '❌ не задана');
+    console.log('💬 Субтитры:       ', settings?.subtitle_style || '❌ не заданы');
+    console.log('🎵 Музыка:         ', settings?.music_url ? '✅ есть' : '❌ нет');
+    console.log('📐 Формат:         ', settings?.aspect_ratio || '9:16');
+    console.log('⚡ Энергия:        ', settings?.energy_preset || 'не задана');
+    console.log('🏷️  Бренд:          ', settings?.brand_name || 'нет');
+    console.log('────────────────────────────────────────');
+    console.log('📝 Транскриптов:   ', transcripts?.length || 0, 'файлов');
+    console.log('📝 Всего слов:     ', transcripts?.reduce((a,t)=>a+(t.words?.length||0),0) || 0);
+    console.log('────────────────────────────────────────');
+    scenes?.forEach((s,i) => console.log(`   Сцена ${i+1}: файл=${s.source_file_index} [${s.trim_start?.toFixed(1)}s→${s.trim_end?.toFixed(1)}s] speed=${s.speed||1} transition=${s.transition||'cut'}`));
+    console.log('════════════════════════════════════════
+');
     console.log('================================');
     console.log('📦 scenes:', scenes?.length);
     console.log('📦 assets:', assets?.length);
