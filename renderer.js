@@ -481,12 +481,12 @@ function burnSubtitles(inputPath, outputPath, words, style, accentHex) {
 
     const accent = (accentHex || '#FF8C00').replace('#', '');
     const styleConfig = {
-      bottom_burn:   { fontsize: 64, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 16, x: '(w-text_w)/2', y: 'h-180' },
-      viral_pop:     { fontsize: 80, fontcolor: '0x'+accent, box: 1, boxcolor: 'black@0.6', boxborderw: 20, x: '(w-text_w)/2', y: '(h-text_h)/2' },
-      outlined:      { fontsize: 88, fontcolor: 'white', box: 0, borderw: 6, bordercolor: 'black', x: '(w-text_w)/2', y: '(h-text_h)/2' },
-      highlight_roll:{ fontsize: 68, fontcolor: 'white', box: 1, boxcolor: '0x'+accent+'@0.85', boxborderw: 14, x: '(w-text_w)/2', y: 'h-200' },
-      word_storm:    { fontsize: 100, fontcolor: 'white', box: 0, borderw: 5, bordercolor: 'black', x: '(w-text_w)/2', y: '(h-text_h)/2' },
-      emoji_enhanced:{ fontsize: 64, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 16, x: '(w-text_w)/2', y: 'h-180' },
+      bottom_burn:   { fontsize: 56, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 14, x: '(w-text_w)/2', y: 'h*0.88' },
+      viral_pop:     { fontsize: 68, fontcolor: '0x'+accent, box: 1, boxcolor: 'black@0.6', boxborderw: 18, x: '(w-text_w)/2', y: 'h*0.85' },
+      outlined:      { fontsize: 72, fontcolor: 'white', box: 0, borderw: 5, bordercolor: 'black', x: '(w-text_w)/2', y: 'h*0.85' },
+      highlight_roll:{ fontsize: 56, fontcolor: 'white', box: 1, boxcolor: '0x'+accent+'@0.85', boxborderw: 14, x: '(w-text_w)/2', y: 'h*0.88' },
+      word_storm:    { fontsize: 80, fontcolor: 'white', box: 0, borderw: 5, bordercolor: 'black', x: '(w-text_w)/2', y: 'h*0.5' },
+      emoji_enhanced:{ fontsize: 56, fontcolor: 'white', box: 1, boxcolor: 'black@0.75', boxborderw: 14, x: '(w-text_w)/2', y: 'h*0.88' },
     };
     const cfg = styleConfig[style] || styleConfig.bottom_burn;
 
