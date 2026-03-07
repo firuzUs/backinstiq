@@ -5,7 +5,13 @@ const path = require('path');
 const os = require('os');
 const axios = require('axios');
 
-ffmpeg.setFfmpegPath(ffmpegStatic);
+const { execSync } = require('child_process');
+let ffmpegPath = ffmpegStatic;
+try {
+  const sysPath = execSync('which ffmpeg').toString().trim();
+  if (sysPath) { ffmpegPath = sysPath; console.log('✅ Системный FFmpeg:', sysPath); }
+} catch(e) { console.log('⚠️ Используем ffmpeg-static'); }
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 // ═══════════════════════════════════════════════════════════
 // ГЛАВНАЯ ФУНКЦИЯ
