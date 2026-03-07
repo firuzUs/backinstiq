@@ -26,6 +26,15 @@ app.get('/', (req, res) => {
 app.post('/render', async (req, res) => {
   try {
     const { scenes, assets, settings, user_id, transcripts } = req.body;
+    console.log('================================');
+    console.log('📦 scenes:', scenes?.length);
+    console.log('📦 assets:', assets?.length);
+    console.log('📦 transcripts:', transcripts?.length, 'words:', transcripts?.reduce((a,t)=>a+(t.words?.length||0),0));
+    console.log('📦 subtitle_style:', settings?.subtitle_style);
+    console.log('📦 color_grade:', settings?.color_grade);
+    console.log('📦 asset[0] url:', assets?.[0]?.storage_url?.slice(0,60));
+    console.log('📦 transcript[0] words:', transcripts?.[0]?.words?.slice(0,2));
+    console.log('================================');
     console.log("📝 Получено транскриптов:", transcripts?.length, "слов:", transcripts?.reduce((a,t) => a+(t.words?.length||0),0));
 
     if (!scenes || !assets || !settings) {
