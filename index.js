@@ -25,7 +25,8 @@ app.get('/', (req, res) => {
 
 app.post('/render', async (req, res) => {
   try {
-    const { scenes, assets, settings, user_id } = req.body;
+    const { scenes, assets, settings, user_id, transcripts } = req.body;
+    console.log("📝 Получено транскриптов:", transcripts?.length, "слов:", transcripts?.reduce((a,t) => a+(t.words?.length||0),0));
 
     if (!scenes || !assets || !settings) {
       return res.status(400).json({ error: 'Need scenes, assets and settings' });
@@ -42,7 +43,7 @@ app.post('/render', async (req, res) => {
       created_at: new Date().toISOString()
     });
 
-    renderer.processJob(job_id, { scenes, assets, settings }, supabase)
+    renderer.processJob(job_id, { scenes, assets, settings, transcripts }, supabase)
       .catch(function(err) {
         console.error('Job failed:', err);
       });

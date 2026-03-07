@@ -143,7 +143,7 @@ function renderVideo(inputPath, outputPath, scene, settings) {
     }
 
     cmd
-      .outputOptions(['-c:a aac', '-b:a 192k'])
+      .outputOptions(['-c:a aac', '-b:a 192k', '-ar', '44100', '-ac', '2'])
       .output(outputPath)
       .on('end', resolve)
       .on('error', (err) => reject(new Error(`Сцена ${scene.scene_index}: ${err.message}`)))
@@ -207,7 +207,7 @@ function mergeScenes(sceneFiles, outputPath) {
         '-crf 18',
         '-c:a aac',
         '-b:a 192k',
-        '-af', 'aresample=44100,dynaudnorm',
+        '-af',
         '-pix_fmt yuv420p',
         '-movflags +faststart',
       ])
