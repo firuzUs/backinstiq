@@ -6,10 +6,12 @@ const { v4: uuidv4 } = require('uuid');
 const renderer = require('./renderer');
 
 const convertRouter = require("./routes/convert");
+const renderTimelineRouter = require("./routes/render-timeline");
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use("/convert", convertRouter);
+app.use("/render-timeline", renderTimelineRouter);
 
 const supabase = createClient(
   process.env.SUPABASE_URL || 'https://placeholder.supabase.co',
